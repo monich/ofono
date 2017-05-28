@@ -30,6 +30,8 @@
 
 #include <gutil_misc.h>
 #include <gutil_macros.h>
+#include <gutil_ints.h>
+#include <gutil_intarray.h>
 
 #include <ofono/netreg.h>
 #include <ofono/watch.h>
@@ -89,13 +91,12 @@ struct ril_network_data_profile {
 struct ril_network_priv {
 	GRilIoChannel *io;
 	GRilIoQueue *q;
+	GUtilInts *supported_modes;
 	struct ril_radio *radio;
 	struct ril_sim_card *simcard;
 	struct ril_vendor *vendor;
 	struct ofono_watch *watch;
 	int rat;
-	enum ril_pref_net_type lte_network_mode;
-	enum ril_pref_net_type umts_network_mode;
 	int network_mode_timeout;
 	char *log_prefix;
 	guint operator_poll_id;
@@ -112,6 +113,7 @@ struct ril_network_priv {
 	gboolean need_initial_attach_apn;
 	gboolean set_initial_attach_apn;
 	struct ofono_network_operator operator;
+	int rats[OFONO_RADIO_ACCESS_MODE_ALL + 1];
 	gboolean assert_rat;
 	gboolean force_gsm_when_radio_off;
 	gboolean use_data_profiles;
@@ -152,13 +154,59 @@ G_DEFINE_TYPE(RilNetwork, ril_network, G_TYPE_OBJECT)
 
 /* Some assumptions: */
 G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_ANY == 0);
-G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_GSM > OFONO_RADIO_ACCESS_MODE_ANY);
-G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_UMTS > OFONO_RADIO_ACCESS_MODE_GSM);
-G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_LTE > OFONO_RADIO_ACCESS_MODE_UMTS);
+G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_GSM == 1);
+G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_UMTS == 2);
+G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_LTE == 4);
+G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_ALL == 7);
+
+/* Default ofono_radio_access_mode -> ril_pref_net_type map */
+static const int ril_network_default_rats[OFONO_RADIO_ACCESS_MODE_ALL + 1] = {
+	-1,                           /* ANY, it has a special meaning */
+	PREF_NET_TYPE_GSM_ONLY,       /* GSM */
+	PREF_NET_TYPE_WCDMA,          /* UMTS */
+	PREF_NET_TYPE_GSM_WCDMA_AUTO, /* UMTS + GSM */
+	PREF_NET_TYPE_LTE_ONLY,       /* LTE */
+	-1,                           /* LTE + GSM */
+	/* PREF_NET_TYPE_LTE_WCDMA doesn't seem to work on Jolla1 */
+	-1,                           /* LTE + UMTS */
+	PREF_NET_TYPE_LTE_GSM_WCDMA,  /* LTE + UMTS + GSM */
+};
 
 static void ril_network_query_pref_mode(struct ril_network *self);
 static void ril_network_check_pref_mode(struct ril_network *self,
 							gboolean immediate);
+
+GUtilInts *ril_network_supported_modes(struct ril_network *self)
+{
+	if (G_LIKELY(self)) {
+		struct ril_network_priv *priv = self->priv;
+
+		if (!priv->supported_modes) {
+			GUtilIntArray *modes = gutil_int_array_new();
+			int i;
+
+			for (i = 0; i<G_N_ELEMENTS(priv->rats); i++) {
+				/*
+				 * Check that the mask doesn't contain
+				 * any disabled technology and that
+				 * there is RIL mapping for this
+				 * combination of technologies.
+				 */
+				if (!(i & ~self->settings->techs) &&
+							priv->rats[i] >= 0) {
+					gutil_int_array_append(modes, i);
+				}
+			}
+
+			priv->supported_modes =
+				gutil_int_array_free_to_ints(modes);
+		}
+
+		return priv->supported_modes;
+	}
+
+	return NULL;
+}
 
 static void ril_network_emit(struct ril_network *self,
 						enum ril_network_signal sig)
@@ -468,48 +516,37 @@ void ril_network_query_registration_state(struct ril_network *self)
 	}
 }
 
-static enum ofono_radio_access_mode ril_network_rat_to_mode(int rat)
+static enum ofono_radio_access_mode ril_network_rat_to_mode
+					(struct ril_network *self, int rat)
 {
-	switch (rat) {
-	case PREF_NET_TYPE_LTE_CDMA_EVDO:
-	case PREF_NET_TYPE_LTE_GSM_WCDMA:
-	case PREF_NET_TYPE_LTE_CMDA_EVDO_GSM_WCDMA:
-	case PREF_NET_TYPE_LTE_ONLY:
-	case PREF_NET_TYPE_LTE_WCDMA:
-		return OFONO_RADIO_ACCESS_MODE_LTE;
-	case PREF_NET_TYPE_GSM_WCDMA_AUTO:
-	case PREF_NET_TYPE_WCDMA:
-	case PREF_NET_TYPE_GSM_WCDMA:
-		return OFONO_RADIO_ACCESS_MODE_UMTS;
-	default:
-		DBG("unexpected rat mode %d", rat);
-	case PREF_NET_TYPE_GSM_ONLY:
-		return OFONO_RADIO_ACCESS_MODE_GSM;
+	if (rat >= 0) {
+		struct ril_network_priv *priv = self->priv;
+		int i;
+
+		for (i = 0; i < G_N_ELEMENTS(priv->rats); i++) {
+			if (priv->rats[i] == rat) {
+				return i;
+			}
+		}
 	}
+
+	DBG("unexpected rat mode %d", rat);
+	return OFONO_RADIO_ACCESS_MODE_GSM;
 }
 
 static int ril_network_mode_to_rat(struct ril_network *self,
 					enum ofono_radio_access_mode mode)
 {
-	struct ril_sim_settings *settings = self->settings;
 	struct ril_network_priv *priv = self->priv;
+	int m = (mode == OFONO_RADIO_ACCESS_MODE_ANY) ?
+		self->settings->techs : (mode & OFONO_RADIO_ACCESS_MODE_ALL);
 
-	switch (mode) {
-	case OFONO_RADIO_ACCESS_MODE_ANY:
-	case OFONO_RADIO_ACCESS_MODE_LTE:
-		if (settings->techs & OFONO_RADIO_ACCESS_MODE_LTE) {
-			return priv->lte_network_mode;
-		}
-		/* no break */
-	default:
-	case OFONO_RADIO_ACCESS_MODE_UMTS:
-		if (settings->techs & OFONO_RADIO_ACCESS_MODE_UMTS) {
-			return priv->umts_network_mode;
-		}
-		/* no break */
-	case OFONO_RADIO_ACCESS_MODE_GSM:
-		return PREF_NET_TYPE_GSM_ONLY;
+	/* Turn lower bits off until we find the mapping */
+	while (m && priv->rats[m] < 0) {
+		m &= m - 1;
 	}
+
+	return priv->rats[m] >= 0 ? priv->rats[m] : PREF_NET_TYPE_GSM_ONLY;
 }
 
 static enum ofono_radio_access_mode ril_network_actual_pref_mode
@@ -919,7 +956,7 @@ static void ril_network_check_pref_mode(struct ril_network *self,
 		const enum ofono_radio_access_mode expected =
 			ril_network_actual_pref_mode(self);
 		const enum ofono_radio_access_mode actual =
-			ril_network_rat_to_mode(priv->rat);
+			ril_network_rat_to_mode(self, priv->rat);
 
 		if (priv->timer[TIMER_FORCE_CHECK_PREF_MODE]) {
 			ril_network_stop_timer(self,
@@ -934,8 +971,8 @@ static void ril_network_check_pref_mode(struct ril_network *self,
 
 		if (priv->rat >= 0 && actual != expected) {
 			DBG_(self, "rat %d (%s), expected %s", priv->rat,
-				ofono_radio_access_mode_to_string(actual),
-				ofono_radio_access_mode_to_string(expected));
+				ril_access_mode_to_string(actual),
+				ril_access_mode_to_string(expected));
 		}
 
 		if (immediate) {
@@ -975,9 +1012,9 @@ static void ril_network_startup_query_pref_mode_cb(GRilIoChannel *io,
 		const enum ofono_radio_access_mode pref_mode = self->pref_mode;
 
 		priv->rat = ril_network_parse_pref_resp(data, len);
-		self->pref_mode = ril_network_rat_to_mode(priv->rat);
+		self->pref_mode = ril_network_rat_to_mode(self, priv->rat);
 		DBG_(self, "rat mode %d (%s)", priv->rat,
-			ofono_radio_access_mode_to_string(self->pref_mode));
+			ril_access_mode_to_string(self->pref_mode));
 
 		if (self->pref_mode != pref_mode) {
 			ril_network_emit(self, SIGNAL_PREF_MODE_CHANGED);
@@ -1004,9 +1041,9 @@ static void ril_network_query_pref_mode_cb(GRilIoChannel *io, int status,
 
 	priv->query_rat_id = 0;
 	priv->rat = ril_network_parse_pref_resp(data, len);
-	self->pref_mode = ril_network_rat_to_mode(priv->rat);
+	self->pref_mode = ril_network_rat_to_mode(self, priv->rat);
 	DBG_(self, "rat mode %d (%s)", priv->rat,
-			ofono_radio_access_mode_to_string(self->pref_mode));
+			ril_access_mode_to_string(self->pref_mode));
 
 	if (self->pref_mode != pref_mode) {
 		ril_network_emit(self, SIGNAL_PREF_MODE_CHANGED);
@@ -1036,9 +1073,21 @@ void ril_network_set_max_pref_mode(struct ril_network *self,
 {
 	if (self && (self->max_pref_mode != max_mode || force_check)) {
 		if (self->max_pref_mode != max_mode) {
-			DBG_(self, "rat mode %d (%s)", max_mode,
-				ofono_radio_access_mode_to_string(max_mode));
-			self->max_pref_mode = max_mode;
+			guint i, n;
+			GUtilInts *modes = ril_network_supported_modes(self);
+			const int* values = gutil_ints_get_data(modes, &n);
+			enum ofono_radio_access_mode full_max_mode = max_mode;
+			/* Extend max_mode with additional lower bits */
+			for (i = 0; i < n; i++) {
+				enum ofono_radio_access_mode mode = values[i];
+				if ((mode & max_mode) == max_mode &&
+							max_mode > mode) {
+					full_max_mode |= mode;
+				}
+			}
+			DBG_(self, "rat mode %d (%s)", full_max_mode,
+				ril_access_mode_to_string(full_max_mode));
+			self->max_pref_mode = full_max_mode;
 			ril_network_emit(self, SIGNAL_MAX_PREF_MODE_CHANGED);
 			ril_network_check_initial_attach_apn(self);
 		}
@@ -1241,8 +1290,9 @@ struct ril_network *ril_network_new(const char *path, GRilIoChannel *io,
 	DBG_(self, "");
 
 	/* Copy relevant config values */
-	priv->lte_network_mode = config->lte_network_mode;
-	priv->umts_network_mode = config->umts_network_mode;
+	memcpy(priv->rats, ril_network_default_rats, sizeof(priv->rats));
+	priv->rats[OFONO_RADIO_ACCESS_MODE_UMTS] = config->umts_network_mode;
+	priv->rats[OFONO_RADIO_ACCESS_MODE_ALL] = config->lte_network_mode;
 	priv->network_mode_timeout = config->network_mode_timeout;
 	priv->force_gsm_when_radio_off = config->force_gsm_when_radio_off;
 	priv->use_data_profiles = config->use_data_profiles;
@@ -1360,6 +1410,7 @@ static void ril_network_finalize(GObject *object)
 	ril_sim_settings_unref(self->settings);
 	ril_vendor_unref(priv->vendor);
 	g_slist_free_full(priv->data_profiles, g_free);
+	gutil_ints_unref(priv->supported_modes);
 	g_free(priv->log_prefix);
 	G_OBJECT_CLASS(ril_network_parent_class)->finalize(object);
 }

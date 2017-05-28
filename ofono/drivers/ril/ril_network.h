@@ -54,6 +54,7 @@ struct ril_network *ril_network_new(const char *path, GRilIoChannel *io,
 struct ril_network *ril_network_ref(struct ril_network *net);
 void ril_network_unref(struct ril_network *net);
 
+GUtilInts *ril_network_supported_modes(struct ril_network *net);
 void ril_network_set_max_pref_mode(struct ril_network *net,
 				enum ofono_radio_access_mode max_pref_mode,
 				gboolean force_check);

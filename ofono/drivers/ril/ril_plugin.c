@@ -56,10 +56,6 @@
 #include <ofono/storage.h>
 #include <ofono/ril-transport.h>
 
-#define OFONO_RADIO_ACCESS_MODE_ALL (OFONO_RADIO_ACCESS_MODE_GSM |\
-                                     OFONO_RADIO_ACCESS_MODE_UMTS |\
-                                     OFONO_RADIO_ACCESS_MODE_LTE)
-
 #define RIL_DEVICE_IDENTITY_RETRIES_LAST 2
 
 #define RIL_SUB_SIZE                4
@@ -1530,7 +1526,7 @@ static ril_slot *ril_plugin_parse_config_group(GKeyFile *file,
 				break;
 			}
 
-			if (!ofono_radio_access_mode_from_string(s, &m)) {
+			if (!ril_access_mode_from_string(s, &m)) {
 				ofono_warn("Unknown technology %s in [%s] "
 					"section of %s", s, group,
 					RILMODEM_CONF_FILE);

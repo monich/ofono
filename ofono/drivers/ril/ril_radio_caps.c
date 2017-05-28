@@ -19,6 +19,7 @@
 #include "ril_sim_card.h"
 #include "ril_sim_settings.h"
 #include "ril_data.h"
+#include "ril_util.h"
 #include "ril_log.h"
 
 #include <grilio_queue.h>
@@ -620,10 +621,10 @@ static gboolean ril_radio_caps_manager_can_check
 				caps->network->settings->imsi ?
 				caps->network->settings->imsi : "",
 				caps->cap.rat,
-				ofono_radio_access_mode_to_string
+				ril_access_mode_to_string
 				(ril_radio_caps_access_mode(caps)),
 				caps->cap.logicalModemUuid,
-				ofono_radio_access_mode_to_string
+				ril_access_mode_to_string
 				(ril_radio_caps_pref_mode_limit(caps)));
 		}
 		return !all_modes_equal;
