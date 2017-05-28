@@ -24,6 +24,7 @@
 #endif
 
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -45,15 +46,15 @@ static GSList *g_drivers = NULL;
 struct ofono_radio_settings {
 	struct ofono_dbus_queue *q;
 	int flags;
-	enum ofono_radio_access_mode mode;
+	int mode; /* rat mask or -legacy mode */
 	enum ofono_radio_band_gsm band_gsm;
 	enum ofono_radio_band_umts band_umts;
 	ofono_bool_t fast_dormancy;
-	enum ofono_radio_access_mode pending_mode;
+	int pending_mode;
 	enum ofono_radio_band_gsm pending_band_gsm;
 	enum ofono_radio_band_umts pending_band_umts;
 	ofono_bool_t fast_dormancy_pending;
-	uint32_t available_rats;
+	enum ofono_radio_access_mode *available_modes;
 	GKeyFile *settings;
 	char *imsi;
 	const struct ofono_radio_settings_driver *driver;
@@ -61,8 +62,13 @@ struct ofono_radio_settings {
 	struct ofono_atom *atom;
 };
 
-#define radio_access_mode_to_string ofono_radio_access_mode_to_string
-const char *ofono_radio_access_mode_to_string(enum ofono_radio_access_mode m)
+static const enum ofono_radio_access_mode legacy_modes[] = {
+	OFONO_RADIO_ACCESS_MODE_GSM,
+	OFONO_RADIO_ACCESS_MODE_UMTS,
+	OFONO_RADIO_ACCESS_MODE_LTE
+};
+
+static const char *radio_legacy_mode_to_string(enum ofono_radio_access_mode m)
 {
 	switch (m) {
 	case OFONO_RADIO_ACCESS_MODE_ANY:
@@ -77,14 +83,83 @@ const char *ofono_radio_access_mode_to_string(enum ofono_radio_access_mode m)
 		return NULL;
 	}
 }
-#define radio_access_mode_from_string ofono_radio_access_mode_from_string
-ofono_bool_t ofono_radio_access_mode_from_string(const char *str,
+
+static const char *radio_access_modes_to_string(enum ofono_radio_access_mode m)
+{
+	static const char *mode_string[OFONO_RADIO_ACCESS_MODE_ALL+1] = {
+		"any",
+		"+gsm",
+		"+umts",
+		"+umts+gsm",
+		"+lte",
+		"+lte+gsm",
+		"+lte+umts",
+		"+lte+umts+gsm"
+	};
+
+	return mode_string[m & OFONO_RADIO_ACCESS_MODE_ALL];
+}
+
+static const char *radio_access_mode_to_string(int m)
+{
+	return m < 0 ? radio_legacy_mode_to_string(-m) :
+		radio_access_modes_to_string(m);
+}
+
+static gboolean radio_access_mode_is_supported(struct ofono_radio_settings *rs,
+					enum ofono_radio_access_mode mode)
+{
+	/* ANY is always supported */
+	if (mode == OFONO_RADIO_ACCESS_MODE_ANY)
+		return TRUE;
+
+	if (rs->available_modes) {
+		const enum ofono_radio_access_mode *m = rs->available_modes;
+
+		while (*m) {
+			if (*m++ == mode) {
+				return TRUE;
+			}
+		}
+
+		return FALSE;
+	}
+
+	/*
+	 * We have no idea what's supported and what's not, let's assume
+	 * that everything is!
+	 */
+	return TRUE;
+}
+
+static gboolean radio_legacy_rat_driver(struct ofono_radio_settings *rs)
+{
+	/*
+	 * query_available_rat_modes is provided by the drivers that support
+	 * ofono_radio_access_mode mask, i.e. a set of preferred technologies.
+	 */
+	return !rs->driver->query_available_rat_modes;
+}
+
+static enum ofono_radio_access_mode radio_map_legacy_rat
+				(struct ofono_radio_settings *rs,
+					enum ofono_radio_access_mode rat)
+{
+	if (rat == OFONO_RADIO_ACCESS_MODE_ANY || radio_legacy_rat_driver(rs))
+		return rat;
+
+	if (rs->driver->map_legacy_rat_mode)
+		return rs->driver->map_legacy_rat_mode(rs, rat);
+
+	/* rat is supposed to be a single bit */
+	return (rat | (rat - 1)) & OFONO_RADIO_ACCESS_MODE_ALL;
+}
+
+static gboolean radio_legacy_mode_from_string(const char *str,
 					enum ofono_radio_access_mode *mode)
 
 {
-	if (!str) {
-		return FALSE;
-	} else if (g_str_equal(str, "any")) {
+	if (g_str_equal(str, "any")) {
 		*mode = OFONO_RADIO_ACCESS_MODE_ANY;
 		return TRUE;
 	} else if (g_str_equal(str, "gsm")) {
@@ -98,6 +173,39 @@ ofono_bool_t ofono_radio_access_mode_from_string(const char *str,
 		return TRUE;
 	}
 
+	return FALSE;
+}
+
+static gboolean radio_access_modes_from_string(const char *str,
+					enum ofono_radio_access_mode *mask)
+{
+	if (str && str[0] == '+') {
+		gboolean ok = TRUE, any = FALSE;
+		char **modes = g_strsplit (str + 1, "+", -1);
+		int i;
+
+		*mask = 0;
+
+		for (i = 0; modes[i] && ok; i++) {
+			enum ofono_radio_access_mode m;
+			const char *s = modes[i];
+
+			if (radio_legacy_mode_from_string(s, &m)) {
+				if (m == OFONO_RADIO_ACCESS_MODE_ANY)
+					any = TRUE;
+				else
+					*mask |= m;
+			} else {
+				ok = FALSE;
+			}
+		}
+
+		if (any)
+			*mask = OFONO_RADIO_ACCESS_MODE_ANY;
+
+		g_strfreev(modes);
+		return ok;
+	}
 	return FALSE;
 }
 
@@ -233,25 +341,48 @@ static DBusMessage *radio_get_properties_reply(DBusMessage *msg,
 					DBUS_TYPE_BOOLEAN, &value);
 	}
 
-	if (rs->available_rats) {
-		const char *rats[sizeof(uint32_t) * CHAR_BIT + 1];
-		const char **dbus_rats = rats;
-		int n = 0;
-		unsigned int i;
+	if (rs->available_modes) {
+		int i = 0, n = 0;
+		const char **dbus_rats;
+		const enum ofono_radio_access_mode *m;
 
-		for (i = 0; i < sizeof(uint32_t) * CHAR_BIT; i++) {
-			int tech = 1 << i;
+		while (rs->available_modes[n])
+			n++;
 
-			if (!(rs->available_rats & tech))
-				continue;
+		if (radio_legacy_rat_driver(rs)) {
+			dbus_rats = g_new(const char *, n + 1);
+			for (m = rs->available_modes; *m; m++) {
+				dbus_rats[i++] =
+					radio_legacy_mode_to_string(*m);
+			}
+		} else {
+			int k;
 
-			rats[n++] = radio_access_mode_to_string(tech);
+			/* Add valid legacy modes */
+			n += G_N_ELEMENTS(legacy_modes);
+			dbus_rats = g_new(const char *, n + 1);
+
+			for (k = 0; k < G_N_ELEMENTS(legacy_modes); k++) {
+				enum ofono_radio_access_mode l =
+					legacy_modes[k];
+
+				if (radio_map_legacy_rat(rs, l)) {
+					dbus_rats[i++] =
+						radio_legacy_mode_to_string(l);
+				}
+			}
+
+			/* and the combinations of modes */
+			for (m = rs->available_modes; *m; m++) {
+				dbus_rats[i++] =
+					radio_access_modes_to_string(*m);
+			}
 		}
 
-		rats[n] = NULL;
-
+		dbus_rats[i] = NULL;
 		ofono_dbus_dict_append_array(&dict, "AvailableTechnologies",
 						DBUS_TYPE_STRING, &dbus_rats);
+		g_free(dbus_rats);
 	}
 
 	dbus_message_iter_close_container(&iter, &dict);
@@ -358,8 +489,7 @@ static void radio_band_set_callback(const struct ofono_error *error,
 	radio_set_band(rs);
 }
 
-static void radio_set_rat_mode(struct ofono_radio_settings *rs,
-				enum ofono_radio_access_mode mode)
+static void radio_set_rat_mode(struct ofono_radio_settings *rs, int mode)
 {
 	DBusConnection *conn = ofono_dbus_get_connection();
 	const char *path;
@@ -379,8 +509,8 @@ static void radio_set_rat_mode(struct ofono_radio_settings *rs,
 						DBUS_TYPE_STRING, &str_mode);
 
 	if (rs->settings) {
-		g_key_file_set_integer(rs->settings, SETTINGS_GROUP,
-				"TechnologyPreference", rs->mode);
+		g_key_file_set_string(rs->settings, SETTINGS_GROUP,
+				"TechnologyPreference", str_mode);
 		storage_sync(rs->imsi, SETTINGS_STORE, rs->settings);
 	}
 }
@@ -423,10 +553,47 @@ static void radio_available_rats_query_callback(const struct ofono_error *error,
 {
 	struct ofono_radio_settings *rs = data;
 
-	if (error->type == OFONO_ERROR_TYPE_NO_ERROR)
-		rs->available_rats = available_rats & 0x7;
-	else
+	if (error->type == OFONO_ERROR_TYPE_NO_ERROR) {
+		unsigned int m, n;
+
+		/* Count number of bits */
+		available_rats &= OFONO_RADIO_ACCESS_MODE_ALL;
+		for (m = available_rats, n = 0; m; n++)
+			m &= m - 1;
+
+		g_free(rs->available_modes);
+		rs->available_modes = g_new(enum ofono_radio_access_mode, n+1);
+
+		for (m = available_rats, n = 0; m; n++) {
+			/* Extract the least significant bit from the mask */
+			rs->available_modes[n] = (m & ~(m - 1));
+			m &= m - 1;
+		}
+		rs->available_modes[n] = 0;
+	} else {
 		DBG("Error while querying available rats");
+	}
+
+	radio_send_properties_reply(rs);
+}
+
+static void radio_available_modes_query_callback(const struct ofono_error *err,
+			const enum ofono_radio_access_mode *modes, void *data)
+{
+	struct ofono_radio_settings *rs = data;
+
+	if (err->type == OFONO_ERROR_TYPE_NO_ERROR) {
+		unsigned int n;
+
+		for (n = 0; modes[n]; n++);
+
+		g_free(rs->available_modes);
+		rs->available_modes = g_new(enum ofono_radio_access_mode, n+1);
+		rs->available_modes[n] = 0;
+		memcpy(rs->available_modes, modes, sizeof(modes[0]) * n);
+	} else {
+		DBG("Error while querying available modes");
+	}
 
 	radio_send_properties_reply(rs);
 }
@@ -434,12 +601,17 @@ static void radio_available_rats_query_callback(const struct ofono_error *error,
 static void radio_query_available_rats(struct ofono_radio_settings *rs)
 {
 	/* Modem technology is not supposed to change, so one query is enough */
-	if (rs->driver->query_available_rats == NULL || rs->available_rats) {
+	if (rs->available_modes || (!rs->driver->query_available_rats &&
+				!rs->driver->query_available_rat_modes)) {
 		radio_send_properties_reply(rs);
 		return;
 	}
 
-	rs->driver->query_available_rats(
+	if (rs->driver->query_available_rat_modes)
+		rs->driver->query_available_rat_modes(
+				rs, radio_available_modes_query_callback, rs);
+	else
+		rs->driver->query_available_rats(
 				rs, radio_available_rats_query_callback, rs);
 }
 
@@ -504,10 +676,11 @@ static void radio_query_band(struct ofono_radio_settings *rs)
 }
 
 static void radio_rat_mode_query_callback(const struct ofono_error *error,
-					enum ofono_radio_access_mode mode,
+					enum ofono_radio_access_mode rat,
 					void *data)
 {
 	struct ofono_radio_settings *rs = data;
+	int mode = rat;
 
 	if (error->type != OFONO_ERROR_TYPE_NO_ERROR) {
 		DBG("Error during radio access mode query");
@@ -515,6 +688,22 @@ static void radio_rat_mode_query_callback(const struct ofono_error *error,
 		__ofono_dbus_queue_reply_failed(rs->q);
 
 		return;
+	}
+
+	if (radio_legacy_rat_driver(rs)) {
+		mode = -mode;
+	} else {
+		/*
+		 * If we have previously set a legacy mode, let's check
+		 * it if still maps to the current (real) mode and
+		 * if it does, keep the legacy mode. This is necessary
+		 * for compatibility with legacy UIs that only know
+		 * about legacy modes.
+		 */
+		if (rs->mode < 0 &&
+			radio_map_legacy_rat(rs, -rs->mode) == mode) {
+			mode = rs->mode;
+		}
 	}
 
 	radio_set_rat_mode(rs, mode);
@@ -564,7 +753,8 @@ static DBusMessage *radio_set_property_handler(DBusMessage *msg, void *data)
 
 	if (g_strcmp0(property, "TechnologyPreference") == 0) {
 		const char *value;
-		enum ofono_radio_access_mode mode;
+		int mode;
+		enum ofono_radio_access_mode am;
 
 		if (rs->driver->set_rat_mode == NULL)
 			return __ofono_error_not_implemented(msg);
@@ -573,7 +763,27 @@ static DBusMessage *radio_set_property_handler(DBusMessage *msg, void *data)
 			return __ofono_error_invalid_args(msg);
 
 		dbus_message_iter_get_basic(&var, &value);
-		if (radio_access_mode_from_string(value, &mode) == FALSE)
+		if (radio_legacy_mode_from_string(value, &am)) {
+			mode = -(int)am;
+
+			if (radio_legacy_rat_driver(rs)) {
+				/* Make sure it's supported */
+				if (!radio_access_mode_is_supported(rs, am))
+					return __ofono_error_not_supported(msg);
+			} else if (mode != OFONO_RADIO_ACCESS_MODE_ANY) {
+				/* Map a legacy value into the real one */
+				am = radio_map_legacy_rat(rs, am);
+				if (!am)
+					return __ofono_error_not_supported(msg);
+			}
+		} else if (radio_access_modes_from_string(value, &am)) {
+			mode = am;
+
+			/* Make sure this combination of modes is supported */
+			if (radio_legacy_rat_driver(rs) ||
+				!radio_access_mode_is_supported(rs, am))
+				return __ofono_error_not_supported(msg);
+		} else
 			return __ofono_error_invalid_args(msg);
 
 		if (rs->mode == mode)
@@ -581,7 +791,7 @@ static DBusMessage *radio_set_property_handler(DBusMessage *msg, void *data)
 
 		rs->pending_mode = mode;
 
-		rs->driver->set_rat_mode(rs, mode, radio_mode_set_callback, rs);
+		rs->driver->set_rat_mode(rs, am, radio_mode_set_callback, rs);
 		/* will be saved in radiosettng on success response*/
 		return NULL;
 	} else if (g_strcmp0(property, "GsmBand") == 0) {
@@ -722,6 +932,7 @@ static void radio_settings_unregister(struct ofono_atom *atom)
 	struct ofono_modem *modem = __ofono_atom_get_modem(rs->atom);
 
 	__ofono_dbus_queue_free(rs->q);
+	g_free(rs->available_modes);
 	ofono_modem_remove_interface(modem, OFONO_RADIO_SETTINGS_INTERFACE);
 	g_dbus_unregister_interface(conn, path, OFONO_RADIO_SETTINGS_INTERFACE);
 
@@ -764,7 +975,7 @@ struct ofono_radio_settings *ofono_radio_settings_create(struct ofono_modem *mod
 	if (rs == NULL)
 		return NULL;
 
-	rs->mode = -1;
+	rs->mode = 0;
 	rs->q = __ofono_dbus_queue_new();
 	rs->atom = __ofono_modem_add_atom(modem, OFONO_ATOM_TYPE_RADIO_SETTINGS,
 						radio_settings_remove, rs);
@@ -834,6 +1045,8 @@ static void radio_load_settings(struct ofono_radio_settings *rs,
 					const char *imsi)
 {
 	GError *error;
+	char *str;
+	gboolean save_mode = FALSE;
 
 	rs->settings = storage_open(imsi, SETTINGS_STORE);
 
@@ -884,13 +1097,37 @@ static void radio_load_settings(struct ofono_radio_settings *rs,
 
 	rs->pending_band_umts = rs->band_umts;
 
-	rs->mode = g_key_file_get_integer(rs->settings, SETTINGS_GROUP,
-					"TechnologyPreference", &error);
+	rs->mode = 0;
 
-	if (error || radio_access_mode_to_string(rs->mode) == NULL) {
-		rs->mode = OFONO_RADIO_ACCESS_MODE_ANY;
-		g_key_file_set_integer(rs->settings, SETTINGS_GROUP,
-					"TechnologyPreference", rs->mode);
+	str = g_key_file_get_string(rs->settings, SETTINGS_GROUP,
+					"TechnologyPreference", NULL);
+
+	if (str) {
+		enum ofono_radio_access_mode am;
+
+		if (radio_legacy_mode_from_string(str, &am)) {
+			if (radio_legacy_rat_driver(rs) ||
+					radio_map_legacy_rat(rs, am)) {
+				rs->mode = -(int)am;
+			}
+		} else if (radio_access_modes_from_string(str, &am)) {
+			/* Mask of rats */
+			rs->mode = am;
+		} else {
+			/* Old format (integer) */
+			save_mode = TRUE;
+			rs->mode = -atoi(str);
+			DBG("migrating %s -> %s", str,
+				radio_access_mode_to_string(rs->mode));
+		}
+		g_free(str);
+	}
+
+	if (save_mode) {
+		g_key_file_set_string(rs->settings, SETTINGS_GROUP,
+				"TechnologyPreference",
+				radio_access_mode_to_string(rs->mode));
+		/* No need to save the file right away */
 	}
 
 	if (error) {
@@ -898,7 +1135,7 @@ static void radio_load_settings(struct ofono_radio_settings *rs,
 		error = NULL;
 	}
 
-	DBG("TechnologyPreference: %d", rs->mode);
+	DBG("TechnologyPreference: %s", radio_access_mode_to_string(rs->mode));
 	DBG("GsmBand: %d", rs->band_gsm);
 	DBG("UmtsBand: %d", rs->band_umts);
 }
@@ -924,7 +1161,8 @@ void ofono_radio_settings_register(struct ofono_radio_settings *rs)
 	 * Diff callback used. No need of using DBUS pending concept.
 	 * As its atom registration time - no DBUS clients.
 	 */
-	rs->driver->set_rat_mode(rs, rs->mode,
+	rs->driver->set_rat_mode(rs, rs->mode < 0 ?
+			radio_map_legacy_rat(rs, -rs->mode) : rs->mode,
 					radio_mode_set_callback_at_reg, rs);
 	return;
 

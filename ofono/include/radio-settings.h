@@ -35,6 +35,11 @@ enum ofono_radio_access_mode {
 	OFONO_RADIO_ACCESS_MODE_LTE	= 0x4,
 };
 
+#define OFONO_RADIO_ACCESS_MODE_ALL	(\
+	OFONO_RADIO_ACCESS_MODE_GSM	|\
+	OFONO_RADIO_ACCESS_MODE_UMTS	|\
+	OFONO_RADIO_ACCESS_MODE_LTE)
+
 enum ofono_radio_band_gsm {
 	OFONO_RADIO_BAND_GSM_ANY,
 	OFONO_RADIO_BAND_GSM_850,
@@ -85,6 +90,11 @@ typedef void (*ofono_radio_settings_available_rats_query_cb_t)(
 						unsigned int available_rats,
 						void *data);
 
+typedef void (*ofono_radio_settings_available_modes_query_cb_t)(
+				const struct ofono_error *error,
+				const enum ofono_radio_access_mode *modes,
+				void *data);
+
 struct ofono_radio_settings_driver {
 	const char *name;
 	int (*probe)(struct ofono_radio_settings *rs, unsigned int vendor,
@@ -115,6 +125,15 @@ struct ofono_radio_settings_driver {
 	void (*query_available_rats)(struct ofono_radio_settings *rs,
 			ofono_radio_settings_available_rats_query_cb_t cb,
 			void *data);
+	/* query_available_rat_modes and map_legacy_rat_mode are provided
+	 * by the drivers that support ofono_radio_access_mode mask, i.e.
+	 * selecting a set of preferred technologies. */
+	void (*query_available_rat_modes)(struct ofono_radio_settings *rs,
+			ofono_radio_settings_available_modes_query_cb_t cb,
+			void *data);
+	enum ofono_radio_access_mode (*map_legacy_rat_mode)
+				(struct ofono_radio_settings *rs,
+					enum ofono_radio_access_mode rat);
 };
 
 int ofono_radio_settings_driver_register(
@@ -135,10 +154,6 @@ void *ofono_radio_settings_get_data(struct ofono_radio_settings *rs);
 
 struct ofono_modem *ofono_radio_settings_get_modem(
 					struct ofono_radio_settings *rs);
-
-const char *ofono_radio_access_mode_to_string(enum ofono_radio_access_mode m);
-ofono_bool_t ofono_radio_access_mode_from_string(const char *str,
-					enum ofono_radio_access_mode *mode);
 
 #ifdef __cplusplus
 }

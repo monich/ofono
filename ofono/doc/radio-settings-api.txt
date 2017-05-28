@@ -42,8 +42,15 @@ Properties	string TechnologyPreference [readwrite]
 					based on reception and
 					availability.
 				"gsm"	Only GSM used for radio access.
-				"umts"	Only UMTS used for radio access.
-				"lte"	Only LTE used for radio access.
+				"umts"	Prefer UMTS but allow GSM too.
+				"lte"	Prefer LTE but allow UMTS and GDM too.
+				"+tech"	Only use the specified technology
+					for radio access, e.g. "+lte".
+				"+tech[+tech]" Allow any of the specified
+					radio technologies, e.g. "+umts+gsm"
+					or "+lte+umts+gsm". Supported
+					combinations are provided by
+					AvailableTechnologies property.
 
 		array{string} AvailableTechnologies [readonly, optional]
 
