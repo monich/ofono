@@ -137,6 +137,46 @@ static void test_strings(void)
 	    "2147483647 (?)"));
 }
 
+void test_access_mode(void)
+{
+	static const struct access_mode_map {
+		const char *str;
+		enum ofono_radio_access_mode value;
+	} modes [] = {
+		{ "any", OFONO_RADIO_ACCESS_MODE_ANY },
+		{ "gsm", OFONO_RADIO_ACCESS_MODE_GSM },
+		{ "umts", OFONO_RADIO_ACCESS_MODE_UMTS },
+		{ "lte", OFONO_RADIO_ACCESS_MODE_LTE }
+	};
+
+	int i;
+
+	for (i = 0; i < G_N_ELEMENTS(modes); i++) {
+		g_assert(!g_strcmp0(ril_access_mode_to_string(modes[i].value),
+				    modes[i].str));
+	}
+	g_assert(!g_strcmp0(ril_access_mode_to_string
+			(OFONO_RADIO_ACCESS_MODE_GSM |
+			OFONO_RADIO_ACCESS_MODE_UMTS), "umts+gsm"));
+	g_assert(!g_strcmp0(ril_access_mode_to_string
+			(OFONO_RADIO_ACCESS_MODE_GSM |
+			OFONO_RADIO_ACCESS_MODE_LTE), "lte+gsm"));
+	g_assert(!ril_access_mode_to_string(-1));
+
+	g_assert(!ril_access_mode_from_string(NULL, NULL));
+	g_assert(!ril_access_mode_from_string("", NULL));
+	g_assert(!ril_access_mode_from_string("invalid", NULL));
+	g_assert(!ril_access_mode_from_string("lte+gsm", NULL));
+
+	for (i = 0; i < G_N_ELEMENTS(modes); i++) {
+		const struct access_mode_map *map = modes + i;
+		enum ofono_radio_access_mode am = OFONO_RADIO_ACCESS_MODE_ANY;
+		g_assert(ril_access_mode_from_string(map->str, NULL));
+		g_assert(ril_access_mode_from_string(map->str, &am));
+		g_assert(am == map->value);
+	}
+}
+
 #define TEST_(name) "/ril_util/" name
 
 int main(int argc, char *argv[])
@@ -153,6 +193,7 @@ int main(int argc, char *argv[])
 	g_test_add_func(TEST_("protocol_to_ofono"), test_protocol_to_ofono);
 	g_test_add_func(TEST_("auth_method"), test_auth_method);
 	g_test_add_func(TEST_("strings"), test_strings);
+	g_test_add_func(TEST_("access_mode"), test_access_mode);
 
 	return g_test_run();
 }
