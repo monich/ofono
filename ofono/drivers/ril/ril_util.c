@@ -472,6 +472,54 @@ gboolean ril_parse_mcc_mnc(const char *str, struct ofono_network_operator *op)
 	return FALSE;
 }
 
+const char *ril_access_mode_to_string(enum ofono_radio_access_mode mode)
+{
+	static const char *str[] = {
+		"any",
+		"gsm",
+		"umts",
+		"umts+gsm",
+		"lte",
+		"lte+gsm",
+		"lte+umts",
+		"lte+umts+gsm"
+	};
+
+	const int i = (mode & OFONO_RADIO_ACCESS_MODE_ALL);
+
+	G_STATIC_ASSERT(G_N_ELEMENTS(str) == OFONO_RADIO_ACCESS_MODE_ALL+1);
+
+	return (i == (int)mode) ? str[i] : NULL;
+}
+
+gboolean ril_access_mode_from_string(const char *str,
+					enum ofono_radio_access_mode *result)
+{
+	if (str) {
+		enum ofono_radio_access_mode mode;
+
+		if (!strcmp(str, "any")) {
+			mode = OFONO_RADIO_ACCESS_MODE_ANY;
+		} else if (!strcmp(str, "gsm")) {
+			mode = OFONO_RADIO_ACCESS_MODE_GSM;
+		} else if (!strcmp(str, "umts")) {
+			mode = OFONO_RADIO_ACCESS_MODE_UMTS;
+		} else if (!strcmp(str, "lte")) {
+			mode = OFONO_RADIO_ACCESS_MODE_LTE;
+		} else {
+			return FALSE;
+		}
+
+		if (result) {
+			*result = mode;
+		}
+
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
 /*
  * Local Variables:
  * mode: C

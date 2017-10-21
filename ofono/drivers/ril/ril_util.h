@@ -31,6 +31,9 @@ int ril_protocol_to_ofono(const char *str);
 enum ril_auth ril_auth_method_from_ofono(enum ofono_gprs_auth_method auth);
 int ril_parse_tech(const char *stech, int *ril_tech);
 gboolean ril_parse_mcc_mnc(const char *str, struct ofono_network_operator *op);
+const char *ril_access_mode_to_string(enum ofono_radio_access_mode mode);
+gboolean ril_access_mode_from_string(const char *str,
+					enum ofono_radio_access_mode *mode);
 
 #define ril_error_init_ok(err) \
 	((err)->error = 0, (err)->type = OFONO_ERROR_TYPE_NO_ERROR)
