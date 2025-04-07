@@ -2419,8 +2419,6 @@ gboolean sms_address_to_hex_string(const struct sms_address *in, char *straddr)
 	if (encode_hex_own_buf(pdu, offset, 0, straddr) == NULL)
 		return FALSE;
 
-	straddr[offset * 2 + 1] = '\0';
-
 	return TRUE;
 }
 
