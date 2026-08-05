@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2018-2019 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -227,12 +228,9 @@ static void gprs_filter_copy_context(struct ofono_gprs_primary_context *dest,
 	dest->cid = src->cid;
 	dest->proto = src->proto;
 	dest->auth_method = src->auth_method;
-	strncpy(dest->apn, src->apn, OFONO_GPRS_MAX_APN_LENGTH);
-	strncpy(dest->username, src->username, OFONO_GPRS_MAX_USERNAME_LENGTH);
-	strncpy(dest->password, src->password, OFONO_GPRS_MAX_PASSWORD_LENGTH);
-	dest->apn[OFONO_GPRS_MAX_APN_LENGTH] = 0;
-	dest->username[OFONO_GPRS_MAX_USERNAME_LENGTH] = 0;
-	dest->password[OFONO_GPRS_MAX_PASSWORD_LENGTH] = 0;
+	g_strlcpy(dest->apn, src->apn, sizeof(dest->apn));
+	g_strlcpy(dest->username, src->username, sizeof(dest->username));
+	g_strlcpy(dest->password, src->password, sizeof(dest->password));
 }
 
 static struct gprs_filter_request_activate *gprs_filter_request_activate_cast
