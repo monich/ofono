@@ -43,6 +43,7 @@ enum sim_info_signals {
 	SIM_INFO_SIGNAL_ICCID_CHANGED,
 	SIM_INFO_SIGNAL_IMSI_CHANGED,
 	SIM_INFO_SIGNAL_SPN_CHANGED,
+	SIM_INFO_SIGNAL_LABEL_CHANGED,
 	SIM_INFO_SIGNAL_COUNT
 };
 
@@ -196,18 +197,22 @@ static void test_basic(void)
 	g_assert(!sim_info_new(NULL));
 	g_assert(!sim_info_ref(NULL));
 	sim_info_unref(NULL);
+	g_assert(!sim_info_set_label(NULL, NULL));
 	g_assert(!sim_info_add_iccid_changed_handler(NULL,NULL,NULL));
 	g_assert(!sim_info_add_imsi_changed_handler(NULL,NULL,NULL));
 	g_assert(!sim_info_add_spn_changed_handler(NULL,NULL,NULL));
+	g_assert(!sim_info_add_label_changed_handler(NULL,NULL,NULL));
 	sim_info_remove_handler(NULL, 0);
 	sim_info_remove_handlers(NULL, NULL, 0);
 
 	/* Very basic things (mostly to improve code coverage) */
 	si = sim_info_new("/test");
 	g_assert(si);
+	g_assert(!sim_info_set_label(si, NULL)); /* No IMSI */
 	g_assert(!sim_info_add_iccid_changed_handler(si,NULL,NULL));
 	g_assert(!sim_info_add_imsi_changed_handler(si,NULL,NULL));
 	g_assert(!sim_info_add_spn_changed_handler(si,NULL,NULL));
+	g_assert(!sim_info_add_label_changed_handler(si,NULL,NULL));
 	sim_info_remove_handler(si, 0);
 	sim_info_remove_handlers(si, NULL, 0);
 	sim_info_unref(sim_info_ref(si));
@@ -247,12 +252,17 @@ static void test_cache(void)
 		sim_info_add_spn_changed_handler(si,
 			test_signal_count_cb, count +
 			SIM_INFO_SIGNAL_SPN_CHANGED);
+	id[SIM_INFO_SIGNAL_LABEL_CHANGED] =
+		sim_info_add_label_changed_handler(si,
+			test_signal_count_cb, count +
+			SIM_INFO_SIGNAL_LABEL_CHANGED);
 
 	fake_watch_set_ofono_sim(w, &sim);
 	fake_watch_emit_queued_signals(w);
 	g_assert(!count[SIM_INFO_SIGNAL_ICCID_CHANGED]);
 	g_assert(!count[SIM_INFO_SIGNAL_IMSI_CHANGED]);
 	g_assert(!count[SIM_INFO_SIGNAL_SPN_CHANGED]);
+	g_assert(!count[SIM_INFO_SIGNAL_LABEL_CHANGED]);
 	g_assert(!si->iccid);
 	g_assert(!si->imsi);
 	g_assert(!si->spn);
@@ -260,9 +270,10 @@ static void test_cache(void)
 	fake_watch_set_ofono_iccid(w, TEST_ICCID);
 	fake_watch_emit_queued_signals(w);
 	g_assert(!g_strcmp0(si->iccid, TEST_ICCID));
-	g_assert(count[SIM_INFO_SIGNAL_ICCID_CHANGED] == 1);
+	g_assert_cmpint(count[SIM_INFO_SIGNAL_ICCID_CHANGED], == ,1);
 	g_assert(!count[SIM_INFO_SIGNAL_IMSI_CHANGED]);
 	g_assert(!count[SIM_INFO_SIGNAL_SPN_CHANGED]);
+	g_assert(!count[SIM_INFO_SIGNAL_LABEL_CHANGED]);
 	g_assert(stat(ICCID_MAP, &st) < 0);
 	count[SIM_INFO_SIGNAL_ICCID_CHANGED] = 0;
 
@@ -270,14 +281,32 @@ static void test_cache(void)
 	fake_watch_emit_queued_signals(w);
 	g_assert(!g_strcmp0(si->imsi, TEST_IMSI));
 	g_assert(!count[SIM_INFO_SIGNAL_ICCID_CHANGED]);
+	g_assert_cmpint(count[SIM_INFO_SIGNAL_IMSI_CHANGED], == ,1);
 	g_assert(!count[SIM_INFO_SIGNAL_SPN_CHANGED]);
-	g_assert(count[SIM_INFO_SIGNAL_IMSI_CHANGED] == 1);
+	g_assert(!count[SIM_INFO_SIGNAL_LABEL_CHANGED]);
 	count[SIM_INFO_SIGNAL_IMSI_CHANGED] = 0;
 	/* ICCID map appears */
 	g_assert(stat(ICCID_MAP, &st) == 0);
 	g_assert(S_ISREG(st.st_mode));
 	/* But no cache yet */
 	g_assert(stat(SIM_CACHE, &st) < 0);
+
+	g_assert(sim_info_set_label(si, "Test"));
+	g_assert(!count[SIM_INFO_SIGNAL_ICCID_CHANGED]);
+	g_assert(!count[SIM_INFO_SIGNAL_IMSI_CHANGED]);
+	g_assert(!count[SIM_INFO_SIGNAL_SPN_CHANGED]);
+	g_assert_cmpint(count[SIM_INFO_SIGNAL_LABEL_CHANGED], == ,1);
+	count[SIM_INFO_SIGNAL_LABEL_CHANGED] = 0;
+	/* Cache file appears */
+	g_assert(stat(SIM_CACHE, &st) == 0);
+	g_assert(S_ISREG(st.st_mode));
+
+	/* Setting the same label doesn't emit signals */
+	g_assert(sim_info_set_label(si, "Test"));
+	g_assert(!count[SIM_INFO_SIGNAL_ICCID_CHANGED]);
+	g_assert(!count[SIM_INFO_SIGNAL_IMSI_CHANGED]);
+	g_assert(!count[SIM_INFO_SIGNAL_SPN_CHANGED]);
+	g_assert(!count[SIM_INFO_SIGNAL_LABEL_CHANGED]);
 
 	/* This will generate default SPN out of MCC and MNC */
 	sim.mcc = TEST_MCC;

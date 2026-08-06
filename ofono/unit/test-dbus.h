@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2018-2021 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -49,6 +50,9 @@ DBusMessage *test_dbus_find_signal(struct test_dbus_context *test,
 		const char *path, const char *iface, const char *member);
 DBusMessage *test_dbus_take_signal(struct test_dbus_context *test,
 		const char *path, const char *iface, const char *member);
+void test_dbus_expect_string_signal(struct test_dbus_context *context,
+		const char *path, const char *iface, const char *member,
+		const char *value);
 
 #endif /* TEST_DBUS_H */
 

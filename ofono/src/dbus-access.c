@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2019-2022 Jolla Ltd.
  *  Copyright (C) 2020 Open Mobile Platform LLC.
  *
@@ -48,6 +49,8 @@ const char *ofono_dbus_access_intf_name(enum ofono_dbus_access_intf intf)
 		return "org.ofono.OemRaw";
 	case OFONO_DBUS_ACCESS_INTF_IMS:
 		return OFONO_IMS_INTERFACE;
+	case OFONO_DBUS_ACCESS_INTF_SIMINFO:
+		return "org.nemomobile.ofono.SimInfo";
 	case OFONO_DBUS_ACCESS_INTF_COUNT:
 		break;
 	}
@@ -199,6 +202,14 @@ const char *ofono_dbus_access_method_name(enum ofono_dbus_access_intf intf,
 		case OFONO_DBUS_ACCESS_IMS_UNREGISTER:
 			return "Unregister";
 		case OFONO_DBUS_ACCESS_IMS_METHOD_COUNT:
+			break;
+		}
+		break;
+	case OFONO_DBUS_ACCESS_INTF_SIMINFO:
+		switch ((enum ofono_dbus_access_siminfo_method)method) {
+		case OFONO_DBUS_ACCESS_SIMINFO_SET_CARD_LABEL:
+			return "SetCardLabel";
+		case OFONO_DBUS_ACCESS_SIMINFO_METHOD_COUNT:
 			break;
 		}
 		break;

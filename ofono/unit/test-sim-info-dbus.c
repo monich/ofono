@@ -37,11 +37,12 @@
 #define TEST_SPN                            "Test"
 
 #define SIM_INFO_DBUS_INTERFACE             "org.nemomobile.ofono.SimInfo"
-#define SIM_INFO_DBUS_INTERFACE_VERSION     (1)
+#define SIM_INFO_DBUS_INTERFACE_VERSION     (2)
 
 #define SIM_INFO_DBUS_ICCID_CHANGED_SIGNAL  "CardIdentifierChanged"
 #define SIM_INFO_DBUS_IMSI_CHANGED_SIGNAL   "SubscriberIdentityChanged"
 #define SIM_INFO_DBUS_SPN_CHANGED_SIGNAL    "ServiceProviderNameChanged"
+#define SIM_INFO_DBUS_LABEL_CHANGED_SIGNAL  "CardLabelChanged"
 
 static gboolean test_debug;
 
@@ -201,6 +202,12 @@ static int rmdir_r(const char *path)
 
 /* ==== common ==== */
 
+struct test_data {
+	struct ofono_modem modem;
+	struct test_dbus_context context;
+	struct sim_info_dbus *dbus;
+};
+
 static gboolean test_timeout(gpointer param)
 {
 	g_assert(!"TIMEOUT");
@@ -227,6 +234,19 @@ static void test_loop_quit_later(GMainLoop *loop)
 	g_idle_add(test_loop_quit, loop);
 }
 
+static void test_sim_info_call(struct test_dbus_context *context,
+	const char *path, const char *method,
+	DBusPendingCallNotifyFunction function, void *data)
+{
+	DBusPendingCall *call;
+	DBusMessage *msg = dbus_message_new_method_call(NULL, path,
+					SIM_INFO_DBUS_INTERFACE, method);
+	g_assert(dbus_connection_send_with_reply(context->client_connection,
+					msg, &call, DBUS_TIMEOUT_INFINITE));
+	dbus_pending_call_set_notify(call, function, data, NULL);
+	dbus_message_unref(msg);
+}
+
 /* ==== Misc ==== */
 
 static void test_misc(void)
@@ -246,20 +266,6 @@ struct test_get_all_data {
 	const char *iccid;
 };
 
-static void test_submit_get_all_call(struct test_get_all_data *test,
-					DBusPendingCallNotifyFunction notify)
-{
-	DBusPendingCall *call;
-	DBusConnection* connection = test->context.client_connection;
-	DBusMessage *msg = dbus_message_new_method_call(NULL, test->modem.path,
-					SIM_INFO_DBUS_INTERFACE, "GetAll");
-
-	g_assert(dbus_connection_send_with_reply(connection, msg, &call,
-						DBUS_TIMEOUT_INFINITE));
-	dbus_pending_call_set_notify(call, notify, test, NULL);
-	dbus_message_unref(msg);
-}
-
 static void test_check_get_all_reply(struct test_get_all_data *test,
 						DBusPendingCall *call)
 {
@@ -271,15 +277,15 @@ static void test_check_get_all_reply(struct test_get_all_data *test,
 	dbus_message_iter_init(reply, &it);
 	g_assert(test_dbus_get_int32(&it) == SIM_INFO_DBUS_INTERFACE_VERSION);
 	g_assert(!g_strcmp0(test_dbus_get_string(&it), test->iccid));
-	g_assert(!g_strcmp0(test_dbus_get_string(&it), ""));
-	g_assert(!g_strcmp0(test_dbus_get_string(&it), ""));
+	g_assert(!g_strcmp0(test_dbus_get_string(&it), "")); /* imsi */
+	g_assert(!g_strcmp0(test_dbus_get_string(&it), "")); /* spn */
 	g_assert(dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_INVALID);
 	dbus_message_unref(reply);
 }
 
 static void test_get_all_reply(DBusPendingCall *call, void *data)
 {
- 	struct test_get_all_data *test = data;
+	struct test_get_all_data *test = data;
 
 	DBG("");
 	test_check_get_all_reply(test, call);
@@ -298,7 +304,7 @@ static void test_get_all1_start(struct test_dbus_context *context)
 	test->dbus = sim_info_dbus_new_path(path);
 	g_assert(test->dbus);
 
-	test_submit_get_all_call(test, test_get_all_reply);
+	test_sim_info_call(context, path, "GetAll", test_get_all_reply, test);
 }
 
 static void test_get_all1(void)
@@ -328,25 +334,51 @@ static void test_get_all1(void)
 
 /* ==== GetAll2 ==== */
 
+static void test_check_get_all2_reply(struct test_get_all_data *test,
+						DBusPendingCall *call)
+{
+	DBusMessage *reply = dbus_pending_call_steal_reply(call);
+	DBusMessageIter it;
+
+	g_assert_cmpint(dbus_message_get_type(reply), == ,
+					DBUS_MESSAGE_TYPE_METHOD_RETURN);
+	dbus_message_iter_init(reply, &it);
+	g_assert_cmpint(test_dbus_get_int32(&it), == ,
+					SIM_INFO_DBUS_INTERFACE_VERSION);
+	g_assert_cmpstr(test_dbus_get_string(&it), == ,test->iccid);
+	g_assert_cmpstr(test_dbus_get_string(&it), == ,""); /* imsi */
+	g_assert_cmpstr(test_dbus_get_string(&it), == ,""); /* spn */
+	g_assert_cmpstr(test_dbus_get_string(&it), == ,""); /* label */
+	g_assert_cmpint(dbus_message_iter_get_arg_type(&it), == ,
+					DBUS_TYPE_INVALID);
+	dbus_message_unref(reply);
+}
+
+static void test_get_all2_reply(DBusPendingCall *call, void *data)
+{
+	struct test_get_all_data *test = data;
+
+	DBG("");
+	test_check_get_all2_reply(test, call);
+	dbus_pending_call_unref(call);
+
+	test_loop_quit_later(test->context.loop);
+}
+
 static void test_get_all2_start(struct test_dbus_context *context)
 {
 	struct test_get_all_data *test =
 		G_CAST(context, struct test_get_all_data, context);
 	const char *path = test->modem.path;
-	struct ofono_watch *watch = test->watch;
 
 	DBG("");
 	test->dbus = sim_info_dbus_new_path(path);
 	g_assert(test->dbus);
+	fake_watch_set_ofono_iccid(test->watch, test->iccid);
+	fake_watch_emit_queued_signals(test->watch);
 
-	/* Tell ofono_watch that we have a modem */
-	test->watch->modem = &test->modem;
-	fake_watch_set_ofono_sim(watch, &test->modem.sim);
-	fake_watch_set_ofono_iccid(watch, test->iccid);
-	fake_watch_signal_queue(watch, FAKE_WATCH_SIGNAL_MODEM_CHANGED);
-	fake_watch_emit_queued_signals(watch);
-
-	test_submit_get_all_call(test, test_get_all_reply);
+	test_sim_info_call(context, path, "GetAll2",
+		test_get_all2_reply, test);
 }
 
 static void test_get_all2(void)
@@ -365,8 +397,9 @@ static void test_get_all2(void)
 	g_main_loop_run(test.context.loop);
 
 	/* "CardIdentifierChanged" is expected */
-	g_assert(test_dbus_find_signal(&test.context, test.modem.path,
-		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_ICCID_CHANGED_SIGNAL));
+	test_dbus_expect_string_signal(&test.context, test.modem.path,
+		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_ICCID_CHANGED_SIGNAL,
+		TEST_ICCID);
 
 	ofono_watch_unref(test.watch);
 	sim_info_dbus_free(test.dbus);
@@ -379,15 +412,9 @@ static void test_get_all2(void)
 
 /* ==== GetInterfaceVersion ==== */
 
-struct test_get_version_data {
-	struct ofono_modem modem;
-	struct test_dbus_context context;
-	struct sim_info_dbus *dbus;
-};
-
 static void test_get_version_reply(DBusPendingCall *call, void *data)
 {
- 	struct test_get_version_data *test = data;
+	struct test_data *test = data;
 	DBusMessage *reply = dbus_pending_call_steal_reply(call);
 	DBusMessageIter it;
 
@@ -405,27 +432,20 @@ static void test_get_version_reply(DBusPendingCall *call, void *data)
 
 static void test_get_version_start(struct test_dbus_context *context)
 {
-	DBusMessage *msg;
-	DBusPendingCall *call;
-	struct test_get_version_data *test =
-		G_CAST(context, struct test_get_version_data, context);
+	struct test_data *test = G_CAST(context, struct test_data, context);
 	const char *path = test->modem.path;
 
 	DBG("");
 	test->dbus = sim_info_dbus_new_path(path);
 	g_assert(test->dbus);
 
-	msg = dbus_message_new_method_call(NULL, test->modem.path,
-			SIM_INFO_DBUS_INTERFACE, "GetInterfaceVersion");
-	g_assert(dbus_connection_send_with_reply(context->client_connection,
-					msg, &call, DBUS_TIMEOUT_INFINITE));
-	dbus_pending_call_set_notify(call, test_get_version_reply, test, NULL);
-	dbus_message_unref(msg);
+	test_sim_info_call(context, path, "GetInterfaceVersion",
+		test_get_version_reply, test);
 }
 
 static void test_get_version(void)
 {
-	struct test_get_version_data test;
+	struct test_data test;
 	guint timeout = test_setup_timeout();
 
 	memset(&test, 0, sizeof(test));
@@ -455,35 +475,26 @@ struct test_get_iccid_data {
 
 static void test_get_iccid_reply(DBusPendingCall *call, void *data)
 {
- 	struct test_get_iccid_data *test = data;
+	struct test_get_iccid_data *test = data;
 
-	DBG("");
 	test_dbus_check_string_reply(call, test->result);
-	dbus_pending_call_unref(call);
-
 	test_loop_quit_later(test->context.loop);
 }
 
 static void test_get_iccid_start(struct test_dbus_context *context)
 {
-	DBusMessage *msg;
-	DBusPendingCall *call;
 	struct test_get_iccid_data *test =
 		G_CAST(context, struct test_get_iccid_data, context);
 	const char *path = test->modem.path;
 
 	DBG("");
 	test->dbus = sim_info_dbus_new_path(path);
+	g_assert(test->dbus);
 	fake_watch_set_ofono_iccid(test->watch, test->iccid);
 	fake_watch_emit_queued_signals(test->watch);
-	g_assert(test->dbus);
 
-	msg = dbus_message_new_method_call(NULL, test->modem.path,
-			SIM_INFO_DBUS_INTERFACE, "GetCardIdentifier");
-	g_assert(dbus_connection_send_with_reply(context->client_connection,
-					msg, &call, DBUS_TIMEOUT_INFINITE));
-	dbus_pending_call_set_notify(call, test_get_iccid_reply, test, NULL);
-	dbus_message_unref(msg);
+	test_sim_info_call(context, path, "GetCardIdentifier",
+		test_get_iccid_reply, test);
 }
 
 static void test_get_iccid(const char *init_iccid, const char *set_iccid,
@@ -506,8 +517,9 @@ static void test_get_iccid(const char *init_iccid, const char *set_iccid,
 	g_main_loop_run(test.context.loop);
 
 	/* "CardIdentifierChanged" is expected */
-	g_assert(test_dbus_find_signal(&test.context, test.modem.path,
-		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_ICCID_CHANGED_SIGNAL));
+	test_dbus_expect_string_signal(&test.context, test.modem.path,
+		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_ICCID_CHANGED_SIGNAL,
+		result);
 
 	ofono_watch_unref(test.watch);
 	sim_info_dbus_free(test.dbus);
@@ -542,19 +554,14 @@ struct test_get_string_data {
 
 static void test_get_string_reply(DBusPendingCall *call, void *data)
 {
- 	struct test_get_string_data *test = data;
+	struct test_get_string_data *test = data;
 
-	DBG("");
 	test_dbus_check_string_reply(call, test->result);
-	dbus_pending_call_unref(call);
-
 	test_loop_quit_later(test->context.loop);
 }
 
 static void test_get_string_start(struct test_dbus_context *context)
 {
-	DBusMessage *msg;
-	DBusPendingCall *call;
 	struct test_get_string_data *test =
 		G_CAST(context, struct test_get_string_data, context);
 	const char *path = test->modem.path;
@@ -571,12 +578,8 @@ static void test_get_string_start(struct test_dbus_context *context)
 	fake_watch_emit_queued_signals(watch);
 	g_assert(test->dbus);
 
-	msg = dbus_message_new_method_call(NULL, test->modem.path,
-					SIM_INFO_DBUS_INTERFACE, test->method);
-	g_assert(dbus_connection_send_with_reply(context->client_connection,
-					msg, &call, DBUS_TIMEOUT_INFINITE));
-	dbus_pending_call_set_notify(call, test_get_string_reply, test, NULL);
-	dbus_message_unref(msg);
+	test_sim_info_call(context, path, test->method,
+		test_get_string_reply, test);
 }
 
 static void test_get_string(const char *method, const char *result)
@@ -600,10 +603,12 @@ static void test_get_string(const char *method, const char *result)
 	g_main_loop_run(test.context.loop);
 
 	/* Verify signals */
-	g_assert(test_dbus_find_signal(&test.context, test.modem.path,
-		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_IMSI_CHANGED_SIGNAL));
-	g_assert(test_dbus_find_signal(&test.context, test.modem.path,
-		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_SPN_CHANGED_SIGNAL));
+	test_dbus_expect_string_signal(&test.context, test.modem.path,
+		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_IMSI_CHANGED_SIGNAL,
+		TEST_IMSI);
+	test_dbus_expect_string_signal(&test.context, test.modem.path,
+		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_SPN_CHANGED_SIGNAL,
+		TEST_DEFAULT_SPN);
 
 	ofono_watch_unref(test.watch);
 	sim_info_dbus_free(test.dbus);
@@ -624,6 +629,125 @@ static void test_get_imsi(void)
 static void test_get_spn(void)
 {
 	test_get_string("GetServiceProviderName", TEST_DEFAULT_SPN);
+}
+
+/* ==== GetCardLabel ==== */
+
+static void test_get_label(void)
+{
+	test_get_string("GetCardLabel", "");
+}
+
+/* ==== SetCardLabel ==== */
+
+struct test_set_label_data {
+	struct ofono_modem modem;
+	struct test_dbus_context context;
+	struct sim_info_dbus *dbus;
+	struct ofono_watch *watch;
+	const char *label;
+};
+
+static void test_set_label_call(struct test_set_label_data *test,
+	const char* label, DBusPendingCallNotifyFunction function)
+{
+	DBusPendingCall *call;
+	DBusMessageIter it;
+	struct test_dbus_context *context = &test->context;
+	DBusMessage *msg = dbus_message_new_method_call(NULL, test->modem.path,
+				SIM_INFO_DBUS_INTERFACE, "SetCardLabel");
+
+	dbus_message_iter_init_append(msg, &it);
+	dbus_message_iter_append_basic(&it, DBUS_TYPE_STRING, &label);
+	g_assert(dbus_connection_send_with_reply(context->client_connection,
+				msg, &call, DBUS_TIMEOUT_INFINITE));
+	dbus_pending_call_set_notify(call, function, test, NULL);
+	dbus_message_unref(msg);
+}
+
+static void test_set_label_query_reply(DBusPendingCall *call, void *data)
+{
+	struct test_set_label_data *test = data;
+
+	/* Verify that the label has been applied */
+	test_dbus_check_string_reply(call, test->label);
+	test_loop_quit_later(test->context.loop);
+}
+
+static void test_set_label_reply_ok(DBusPendingCall *call, void *data)
+{
+	struct test_set_label_data *test = data;
+
+	test_dbus_check_empty_reply(call, NULL);
+
+	/* Make sure that the signal has been received */
+	test_dbus_expect_string_signal(&test->context, test->modem.path,
+		SIM_INFO_DBUS_INTERFACE, SIM_INFO_DBUS_LABEL_CHANGED_SIGNAL,
+		test->label);
+
+	/* Query the card label which we've just set */
+	test_sim_info_call(&test->context, test->modem.path,
+		"GetCardLabel", test_set_label_query_reply, test);
+}
+
+static void test_set_label_reply_err(DBusPendingCall *call, void *data)
+{
+	struct test_set_label_data *test = data;
+
+	test_dbus_check_error_reply(call, "org.ofono.Error.SimNotReady");
+	DBG("failed to set \"%s\" (expected)", test->label);
+
+	/* Set the IMSI */
+	fake_watch_set_ofono_imsi(test->watch, TEST_IMSI);
+	fake_watch_emit_queued_signals(test->watch);
+
+	/* Try to set the label again (this time successfully) */
+	test_set_label_call(test, test->label, test_set_label_reply_ok);
+}
+
+static void test_set_label_start(struct test_dbus_context *context)
+{
+	struct test_set_label_data *test =
+		G_CAST(context, struct test_set_label_data, context);
+
+	DBG("\"%s\"", test->label);
+	test->dbus = sim_info_dbus_new_path(test->modem.path);
+	g_assert(test->dbus);
+
+	/* This call is going to fail because there's no IMSI yet */
+	test_set_label_call(test, test->label, test_set_label_reply_err);
+}
+
+static void test_set_label()
+{
+	struct test_set_label_data test;
+	struct ofono_sim *sim = &test.modem.sim;
+	guint timeout = test_setup_timeout();
+
+	rmdir_r(STORAGEDIR);
+	memset(&test, 0, sizeof(test));
+	test.label = "Test";
+	sim->mcc = TEST_MCC;
+	sim->mnc = TEST_MNC;
+	sim->state = OFONO_SIM_STATE_READY;
+	test.modem.path = TEST_MODEM_PATH;
+	test.context.start = test_set_label_start;
+	test.watch = ofono_watch_new(test.modem.path);
+	test.watch->modem = &test.modem;
+	fake_watch_set_ofono_iccid(test.watch, TEST_ICCID);
+	fake_watch_set_ofono_sim(test.watch, &test.modem.sim);
+	fake_watch_emit_queued_signals(test.watch);
+	test_dbus_setup(&test.context);
+
+	g_main_loop_run(test.context.loop);
+
+	ofono_watch_unref(test.watch);
+	sim_info_dbus_free(test.dbus);
+	test_dbus_shutdown(&test.context);
+	if (timeout) {
+		g_source_remove(timeout);
+	}
+	rmdir_r(STORAGEDIR);
 }
 
 #define TEST_(name) "/sim_info_dbus/" name
@@ -657,6 +781,8 @@ int main(int argc, char *argv[])
 	g_test_add_func(TEST_("GetCardIdentifier2"), test_get_iccid2);
 	g_test_add_func(TEST_("GetSubscriberIdentity"), test_get_imsi);
 	g_test_add_func(TEST_("GetServiceProviderName"), test_get_spn);
+	g_test_add_func(TEST_("GetCardLabel"), test_get_label);
+	g_test_add_func(TEST_("SetCardLabel"), test_set_label);
 
 	return g_test_run();
 }
