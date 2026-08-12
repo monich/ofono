@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2017 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -17,6 +18,8 @@
 
 #include <errno.h>
 #include <string.h>
+
+#include <gutil_misc.h>
 
 #include "smsutil.h"
 
@@ -735,7 +738,7 @@ static void sms_filter_chain_recv_datagram_process_cb
 		dg->len = len;
 		if (dg->buf != buf) {
 			g_free(dg->buf);
-			dg->buf = g_memdup(buf, len);
+			dg->buf = gutil_memdup(buf, len);
 		}
 		if (&dg->addr != addr) {
 			dg->addr = *addr;

@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -51,7 +52,7 @@ struct cellinfo_netmon_update_cbd {
 	} while (0)
 
 #define NETMON_UPDATE_INTERVAL_MS 500
-#define NETMON_UPDATE_SHORT_TIMEOUT_MS 10000
+#define NETMON_UPDATE_SHORT_TIMEOUT_MS 5000
 #define NETMON_UPDATE_LONG_TIMEOUT_MS 10000
 
 /* This number must be in sync with cellinfo_netmon_notify: */
@@ -355,9 +356,11 @@ static gboolean cellinfo_netmon_request_update_timeout(gpointer data)
 {
 	struct cellinfo_netmon_update_cbd *cbd = data;
 	struct cellinfo_netmon_data *nm = cbd->nm;
+	CellInfoControl *ctl = nm->ctl;
 
 	nm->update_id = 0;
-	DBG("%s update timed out", nm->ctl->path);
+	DBG("%s update timed out", ctl->path);
+	cellinfo_netmon_notify_cells(nm->netmon, ctl->info);
 	CALLBACK_WITH_SUCCESS(cbd->cb, cbd->data);
 	return G_SOURCE_REMOVE;
 }

@@ -820,8 +820,7 @@ static void pri_update_mms_context_settings(struct pri_context *ctx)
 	struct ofono_gprs_context *gc = ctx->context_driver;
 	struct context_settings *settings = gc->settings;
 
-	if (ctx->message_proxy)
-		settings->ipv4->proxy = g_strdup(ctx->message_proxy);
+	settings->ipv4->proxy = g_strdup(ctx->message_proxy);
 
 	if (!pri_parse_proxy(ctx, ctx->message_proxy))
 		pri_parse_proxy(ctx, ctx->message_center);
@@ -1431,7 +1430,7 @@ static DBusMessage *pri_set_name(struct pri_context *ctx, DBusConnection *conn,
 	if (strlen(name) > MAX_CONTEXT_NAME_LENGTH)
 		return __ofono_error_invalid_format(msg);
 
-	if (ctx->name && g_str_equal(ctx->name, name))
+	if (g_str_equal(ctx->name, name))
 		return dbus_message_new_method_return(msg);
 
 	strcpy(ctx->name, name);
@@ -1459,7 +1458,7 @@ static DBusMessage *pri_set_message_proxy(struct pri_context *ctx,
 	if (strlen(proxy) > MAX_MESSAGE_PROXY_LENGTH)
 		return __ofono_error_invalid_format(msg);
 
-	if (ctx->message_proxy && g_str_equal(ctx->message_proxy, proxy))
+	if (g_str_equal(ctx->message_proxy, proxy))
 		return dbus_message_new_method_return(msg);
 
 	strcpy(ctx->message_proxy, proxy);
@@ -1488,7 +1487,7 @@ static DBusMessage *pri_set_message_center(struct pri_context *ctx,
 	if (strlen(center) > MAX_MESSAGE_CENTER_LENGTH)
 		return __ofono_error_invalid_format(msg);
 
-	if (ctx->message_center && g_str_equal(ctx->message_center, center))
+	if (g_str_equal(ctx->message_center, center))
 		return dbus_message_new_method_return(msg);
 
 	strcpy(ctx->message_center, center);
@@ -2321,7 +2320,7 @@ static struct pri_context *find_usable_context(struct ofono_gprs *gprs,
 	for (l = gprs->contexts; l; l = l->next) {
 		pri_ctx = l->data;
 
-		if (pri_ctx->context.apn == NULL)
+		if (pri_ctx->context.apn[0] == '\0')
 			return pri_ctx;
 	}
 
