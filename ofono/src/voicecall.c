@@ -2866,7 +2866,7 @@ error:
 
 		/*Save the last dialled number for HFP AT+BLDN*/
 		if (call->direction == CALL_DIRECTION_MOBILE_ORIGINATED
-					&& call->phone_number.number) {
+					&& call->phone_number.number[0]) {
 			const char *number =
 				phone_number_to_string(&call->phone_number);
 			g_key_file_set_string(vc->settings, SETTINGS_GROUP,
