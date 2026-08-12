@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2018-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -65,13 +66,12 @@ struct ofono_netreg {
 	const char *name;
 };
 
-enum ofono_netreg_status ofono_netreg_get_status(struct ofono_netreg *netreg)
+int ofono_netreg_get_status(struct ofono_netreg *netreg)
 {
 	return netreg ? netreg->status : OFONO_NETREG_STATUS_NONE;
 }
 
-enum ofono_access_technology
-		ofono_netreg_get_technology (struct ofono_netreg *netreg)
+int ofono_netreg_get_technology(struct ofono_netreg *netreg)
 {
 	return netreg ? netreg->tech : OFONO_ACCESS_TECHNOLOGY_NONE;
 }
