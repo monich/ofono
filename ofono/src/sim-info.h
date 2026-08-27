@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2017-2021 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -35,6 +36,7 @@ struct sim_info {
 	const char *iccid;
 	const char *imsi;
 	const char *spn;
+	const char *label;
 };
 
 typedef void (*sim_info_cb_t)(struct sim_info *si, void *user_data);
@@ -43,11 +45,14 @@ typedef void (*sim_info_cb_t)(struct sim_info *si, void *user_data);
 struct sim_info *sim_info_new(const char *path);
 struct sim_info *sim_info_ref(struct sim_info *si);
 void sim_info_unref(struct sim_info *si);
+gboolean sim_info_set_label(struct sim_info *si, const char *label);
 gulong sim_info_add_iccid_changed_handler(struct sim_info *si,
 	sim_info_cb_t cb, void *user_data);
 gulong sim_info_add_imsi_changed_handler(struct sim_info *si,
 	sim_info_cb_t cb, void *user_data);
 gulong sim_info_add_spn_changed_handler(struct sim_info *si,
+	sim_info_cb_t cb, void *user_data);
+gulong sim_info_add_label_changed_handler(struct sim_info *si,
 	sim_info_cb_t cb, void *user_data);
 void sim_info_remove_handler(struct sim_info *si, gulong id);
 void sim_info_remove_handlers(struct sim_info *si, gulong *ids, int count);

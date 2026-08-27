@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2017-2021 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -29,9 +30,15 @@
 #include "storage.h"
 #include "sim-info.h"
 
+/*
+ * The storage file is called "cache" for historical reason.
+ * Its name no longer reflects its purpose but renaming it
+ * wouldn't be worth the trouble.
+ */
 #define SIM_INFO_STORE          "cache"
 #define SIM_INFO_STORE_GROUP    "sim"
 #define SIM_INFO_STORE_SPN      "spn"
+#define SIM_INFO_STORE_LABEL    "label"
 
 /* ICCID -> IMSI map */
 #define SIM_ICCID_MAP           "iccidmap"
@@ -62,11 +69,10 @@ typedef struct sim_info_priv {
 	char *cached_spn;
 	char *sim_spn;
 	char *public_spn;
+	char *label;
 	char default_spn[DEFAULT_SPN_BUFSIZE];
 	gulong watch_event_id[WATCH_EVENT_COUNT];
 	guint netreg_status_watch_id;
-	gboolean update_imsi_cache;
-	gboolean update_iccid_map;
 	int queued_signals;
 } SimInfoPriv;
 
@@ -74,12 +80,14 @@ enum sim_info_signal {
 	SIGNAL_ICCID_CHANGED,
 	SIGNAL_IMSI_CHANGED,
 	SIGNAL_SPN_CHANGED,
+	SIGNAL_LABEL_CHANGED,
 	SIGNAL_COUNT
 };
 
 #define SIGNAL_ICCID_CHANGED_NAME   "sailfish-siminfo-iccid-changed"
 #define SIGNAL_IMSI_CHANGED_NAME    "sailfish-siminfo-imsi-changed"
 #define SIGNAL_SPN_CHANGED_NAME     "sailfish-siminfo-spn-changed"
+#define SIGNAL_LABEL_CHANGED_NAME   "sailfish-siminfo-label-changed"
 
 static guint sim_info_signals[SIGNAL_COUNT] = { 0 };
 
@@ -125,30 +133,47 @@ static void sim_info_emit_queued_signals(SimInfo *self)
 	}
 }
 
-static void sim_info_update_imsi_cache(SimInfo *self)
+static char* sim_info_get_string(GKeyFile *cache, const char* key)
+{
+	return g_key_file_get_string(cache, SIM_INFO_STORE_GROUP, key, NULL);
+}
+
+static void sim_info_set_string(GKeyFile *cache, const char* key,
+	const char* value)
+{
+	if (value && value[0]) {
+		g_key_file_set_string(cache, SIM_INFO_STORE_GROUP, key, value);
+	} else {
+		g_key_file_remove_key(cache, SIM_INFO_STORE_GROUP, key, NULL);
+	}
+}
+
+static void sim_info_update_imsi_cache(SimInfo *self, gboolean save)
 {
 	SimInfoPriv *priv = self->priv;
 
-	if (priv->update_imsi_cache && priv->imsi && priv->imsi[0] &&
-		priv->cached_spn && priv->cached_spn[0]) {
-		gboolean save = FALSE;
+	if (priv->imsi && priv->imsi[0]) {
 		const char *store = SIM_INFO_STORE;
 		GKeyFile *cache = storage_open(priv->imsi, store);
-		char *spn = g_key_file_get_string(cache, SIM_INFO_STORE_GROUP,
-			SIM_INFO_STORE_SPN, NULL);
+		char *spn = sim_info_get_string(cache, SIM_INFO_STORE_SPN);
 
 		if (g_strcmp0(priv->cached_spn, spn)) {
 			save = TRUE;
-			g_key_file_set_string(cache, SIM_INFO_STORE_GROUP,
-				SIM_INFO_STORE_SPN, priv->cached_spn);
+			sim_info_set_string(cache, SIM_INFO_STORE_SPN,
+				priv->cached_spn);
 		}
 
 		/*
 		 * Since we are most likely running on flash which
 		 * supports a limited number of writes, don't overwrite
 		 * the file unless something has actually changed.
+		 *
+		 * If the label has changed, sim_info_update_imsi_cache()
+		 * is invoked with save argument already bing true.
 		 */
 		if (save) {
+			sim_info_set_string(cache, SIM_INFO_STORE_LABEL,
+				priv->label);
 			DBG_(self, "updating " STORAGEDIR "/%s/%s",
 				priv->imsi, store);
 			storage_close(priv->imsi, store, cache, TRUE);
@@ -157,7 +182,6 @@ static void sim_info_update_imsi_cache(SimInfo *self)
 		}
 
 		g_free(spn);
-		priv->update_imsi_cache = FALSE;
 	}
 }
 
@@ -165,7 +189,7 @@ static void sim_info_update_iccid_map(SimInfo *self)
 {
 	SimInfoPriv *priv = self->priv;
 
-	if (priv->update_iccid_map && priv->iccid && priv->iccid[0] &&
+	if (priv->iccid && priv->iccid[0] &&
 		priv->imsi && priv->imsi[0]) {
 		const char *store = SIM_ICCID_MAP;
 		GKeyFile *map = storage_open(NULL, store);
@@ -187,7 +211,6 @@ static void sim_info_update_iccid_map(SimInfo *self)
 		}
 
 		g_free(imsi);
-		priv->update_iccid_map = FALSE;
 	}
 }
 
@@ -221,8 +244,7 @@ static void sim_info_set_cached_spn(SimInfo *self, const char *spn)
 		DBG_(self, "%s", spn);
 		g_free(priv->cached_spn);
 		priv->cached_spn = g_strdup(spn);
-		priv->update_imsi_cache = TRUE;
-		sim_info_update_imsi_cache(self);
+		sim_info_update_imsi_cache(self, FALSE);
 		sim_info_update_public_spn(self);
 	}
 }
@@ -236,9 +258,8 @@ static void sim_info_set_spn(SimInfo *self, const char *spn)
 		DBG_(self, "%s", spn);
 		g_free(priv->sim_spn);
 		priv->sim_spn = g_strdup(spn);
-		priv->update_imsi_cache = TRUE;
 		sim_info_set_cached_spn(self, spn);
-		sim_info_update_imsi_cache(self);
+		sim_info_update_imsi_cache(self, FALSE);
 		sim_info_update_public_spn(self);
 	}
 }
@@ -289,9 +310,8 @@ static void sim_info_update_imsi(SimInfo *self)
 		DBG_(self, "%s", imsi);
 		g_free(priv->imsi);
 		self->imsi = priv->imsi = g_strdup(imsi);
-		priv->update_iccid_map = TRUE;
 		sim_info_update_iccid_map(self);
-		sim_info_update_imsi_cache(self);
+		sim_info_update_imsi_cache(self, FALSE);
 		sim_info_signal_queue(self, SIGNAL_IMSI_CHANGED);
 	}
 
@@ -341,51 +361,64 @@ static void sim_info_load_cache(SimInfo *self)
 		char *imsi = g_key_file_get_string(map, SIM_ICCID_MAP_IMSI,
 			priv->iccid, NULL);
 
-		g_key_file_free(map);
 		if (imsi && imsi[0] && g_strcmp0(priv->imsi, imsi)) {
 			if (priv->imsi && priv->imsi[0]) {
 				/* Need to update ICCID -> IMSI map */
 				DBG_(self, "IMSI changed %s -> %s",
 							priv->imsi, imsi);
-				priv->update_imsi_cache = TRUE;
 			}
 			g_free(priv->imsi);
 			self->imsi = priv->imsi = imsi;
 			DBG_(self, "imsi[%s] = %s", priv->iccid, imsi);
 			sim_info_update_iccid_map(self);
 			sim_info_update_default_spn(self);
-			sim_info_signal_queue(self,
-						SIGNAL_IMSI_CHANGED);
+			sim_info_signal_queue(self, SIGNAL_IMSI_CHANGED);
 		} else if (imsi) {
 			g_free(imsi);
 		} else {
 			DBG_(self, "no imsi for iccid %s", priv->iccid);
 		}
+
+		g_key_file_free(map);
 	}
 
 	if (priv->imsi && priv->imsi[0]) {
 		GKeyFile *cache = storage_open(priv->imsi, SIM_INFO_STORE);
-		char *spn = g_key_file_get_string(cache, SIM_INFO_STORE_GROUP,
-			SIM_INFO_STORE_SPN, NULL);
+		char *spn = sim_info_get_string(cache, SIM_INFO_STORE_SPN);
+		char *label = sim_info_get_string(cache, SIM_INFO_STORE_LABEL);
+		gboolean update_imsi_cache = FALSE;
 
-		g_key_file_free(cache);
 		if (spn && spn[0] && g_strcmp0(priv->cached_spn, spn)) {
 			if (priv->cached_spn && priv->cached_spn[0]) {
 				/* Need to update the cache file */
 				DBG_(self, "spn changing %s -> %s",
 					priv->cached_spn, spn);
-				priv->update_imsi_cache = TRUE;
+				update_imsi_cache = TRUE;
 			}
 			g_free(priv->cached_spn);
 			priv->cached_spn = spn;
 			DBG_(self, "spn[%s] = \"%s\"", priv->imsi, spn);
-			sim_info_update_imsi_cache(self);
 			sim_info_update_public_spn(self);
 		} else if (spn) {
 			g_free(spn);
 		} else {
 			DBG_(self, "no spn for imsi %s", priv->imsi);
 		}
+
+		if (g_strcmp0(priv->label, label)) {
+			DBG_(self, "label[%s] = \"%s\"", priv->imsi, label);
+			g_free(priv->label);
+			self->label = priv->label = label;
+			sim_info_signal_queue(self, SIGNAL_LABEL_CHANGED);
+		} else {
+			g_free(label);
+		}
+
+		if (update_imsi_cache) {
+			sim_info_update_imsi_cache(self, FALSE);
+		}
+
+		g_key_file_free(cache);
 	}
 }
 
@@ -406,6 +439,12 @@ static void sim_info_set_iccid(SimInfo *self, const char *iccid)
 				self->imsi = priv->imsi = NULL;
 				sim_info_signal_queue(self,
 					SIGNAL_IMSI_CHANGED);
+			}
+			if (priv->label) {
+				g_free(priv->label);
+				self->label = priv->label = NULL;
+				sim_info_signal_queue(self,
+					SIGNAL_LABEL_CHANGED);
 			}
 			if (priv->sim_spn) {
 				g_free(priv->sim_spn);
@@ -551,6 +590,28 @@ void sim_info_unref(SimInfo *self)
 	}
 }
 
+gboolean sim_info_set_label(SimInfo *self, const char *label)
+{
+	if (self) {
+		SimInfoPriv *priv = self->priv;
+
+		/* There's nothing to label if there's no IMSI */
+		if (priv->imsi && priv->imsi[0]) {
+			if (g_strcmp0(priv->label, label)) {
+				DBG_(self, "\"%s\"", label);
+				g_free(priv->label);
+				self->label = priv->label = g_strdup(label);
+				sim_info_signal_queue(self,
+						SIGNAL_LABEL_CHANGED);
+				sim_info_update_imsi_cache(self, TRUE);
+				sim_info_emit_queued_signals(self);
+			}
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
 gulong sim_info_add_iccid_changed_handler(SimInfo *s, sim_info_cb_t cb,
 	void *arg)
 {
@@ -566,9 +627,16 @@ gulong sim_info_add_imsi_changed_handler(SimInfo *s, sim_info_cb_t cb,
 }
 
 gulong sim_info_add_spn_changed_handler(SimInfo *s,
-					sim_info_cb_t cb, void *arg)
+	sim_info_cb_t cb, void *arg)
 {
 	return (s && cb) ? g_signal_connect(s, SIGNAL_SPN_CHANGED_NAME,
+		G_CALLBACK(cb), arg) : 0;
+}
+
+gulong sim_info_add_label_changed_handler(SimInfo *s,
+	sim_info_cb_t cb, void *arg)
+{
+	return (s && cb) ? g_signal_connect(s, SIGNAL_LABEL_CHANGED_NAME,
 		G_CALLBACK(cb), arg) : 0;
 }
 
@@ -602,6 +670,7 @@ static void sim_info_finalize(GObject *object)
 	g_free(priv->sim_spn);
 	g_free(priv->cached_spn);
 	g_free(priv->public_spn);
+	g_free(priv->label);
 	G_OBJECT_CLASS(sim_info_parent_class)->finalize(object);
 }
 
@@ -612,6 +681,7 @@ static void sim_info_class_init(SimInfoClass *klass)
 	NEW_SIGNAL(klass, ICCID);
 	NEW_SIGNAL(klass, IMSI);
 	NEW_SIGNAL(klass, SPN);
+	NEW_SIGNAL(klass, LABEL);
 }
 
 /*

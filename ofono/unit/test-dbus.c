@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2018-2021 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -202,6 +203,20 @@ DBusMessage *test_dbus_take_signal(struct test_dbus_context *test,
 	return NULL;
 }
 
+void test_dbus_expect_string_signal(struct test_dbus_context *context,
+		const char *path, const char *iface, const char *member,
+		const char *value)
+{
+	DBusMessageIter it;
+	DBusMessage *sig = test_dbus_take_signal(context, path, iface, member);
+
+	g_assert(sig);
+	dbus_message_iter_init(sig, &it);
+	g_assert_cmpstr(test_dbus_get_string(&it), == ,value);
+	DBG("%s \"%s\"", member, value);
+	dbus_message_unref(sig);
+}
+
 int test_dbus_get_int32(DBusMessageIter *it)
 {
 	dbus_uint32_t value;
@@ -262,7 +277,7 @@ void test_dbus_expect_empty_reply(DBusPendingCall *call, void *data)
 	struct test_dbus_context *test = data;
 
 	DBG("");
-	test_dbus_check_empty_reply(call, data);
+	test_dbus_check_empty_reply(call, NULL);
 	test_dbus_loop_quit_later(test->loop);
 }
 
@@ -283,7 +298,7 @@ void test_dbus_check_string_reply(DBusPendingCall *call, const char *str)
 	DBusMessage *reply = dbus_pending_call_steal_reply(call);
 	DBusMessageIter it;
 
-	DBG("");
+	DBG("\"%s\"", str);
 	g_assert(dbus_message_get_type(reply) ==
 					DBUS_MESSAGE_TYPE_METHOD_RETURN);
 
@@ -292,6 +307,7 @@ void test_dbus_check_string_reply(DBusPendingCall *call, const char *str)
 	g_assert(dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_INVALID);
 
 	dbus_message_unref(reply);
+	dbus_pending_call_unref(call);
 }
 
 void test_dbus_message_unref(gpointer data)

@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2017-2021 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -31,6 +32,7 @@ enum sim_info_event_id {
 	SIM_INFO_EVENT_ICCID,
 	SIM_INFO_EVENT_IMSI,
 	SIM_INFO_EVENT_SPN,
+	SIM_INFO_EVENT_LABEL,
 	SIM_INFO_EVENT_COUNT
 };
 
@@ -43,11 +45,12 @@ typedef struct sim_info_dbus {
 } SimInfoDBus;
 
 #define SIM_INFO_DBUS_INTERFACE             "org.nemomobile.ofono.SimInfo"
-#define SIM_INFO_DBUS_INTERFACE_VERSION     (1)
+#define SIM_INFO_DBUS_INTERFACE_VERSION     (2)
 
 #define SIM_INFO_DBUS_ICCID_CHANGED_SIGNAL  "CardIdentifierChanged"
 #define SIM_INFO_DBUS_IMSI_CHANGED_SIGNAL   "SubscriberIdentityChanged"
 #define SIM_INFO_DBUS_SPN_CHANGED_SIGNAL    "ServiceProviderNameChanged"
+#define SIM_INFO_DBUS_LABEL_CHANGED_SIGNAL  "CardLabelChanged" /* v2 */
 
 static void sim_info_dbus_append_version(DBusMessageIter *it)
 {
@@ -62,14 +65,23 @@ static void sim_info_dbus_append_string(DBusMessageIter *it, const char *str)
 	dbus_message_iter_append_basic(it, DBUS_TYPE_STRING, &str);
 }
 
+static void sim_info_dbus_append_all_args(DBusMessageIter *it,
+	const struct sim_info *info)
+{
+	sim_info_dbus_append_version(it);
+	sim_info_dbus_append_string(it, info->iccid);
+	sim_info_dbus_append_string(it, info->imsi);
+	sim_info_dbus_append_string(it, info->spn);
+}
+
 static DBusMessage *sim_info_dbus_reply_with_string(DBusMessage *msg,
 	const char *str)
 {
 	DBusMessage *reply = dbus_message_new_method_return(msg);
-	DBusMessageIter iter;
+	DBusMessageIter it;
 
-	dbus_message_iter_init_append(reply, &iter);
-	sim_info_dbus_append_string(&iter, str);
+	dbus_message_iter_init_append(reply, &it);
+	sim_info_dbus_append_string(&it, str);
 	return reply;
 }
 
@@ -77,15 +89,11 @@ static DBusMessage *sim_info_dbus_get_all(DBusConnection *conn,
 	DBusMessage *msg, void *data)
 {
 	SimInfoDBus *dbus = data;
-	struct sim_info *info = dbus->info;
 	DBusMessage *reply = dbus_message_new_method_return(msg);
 	DBusMessageIter it;
 
 	dbus_message_iter_init_append(reply, &it);
-	sim_info_dbus_append_version(&it);
-	sim_info_dbus_append_string(&it, info->iccid);
-	sim_info_dbus_append_string(&it, info->imsi);
-	sim_info_dbus_append_string(&it, info->spn);
+	sim_info_dbus_append_all_args(&it, dbus->info);
 	return reply;
 }
 
@@ -124,16 +132,65 @@ static DBusMessage *sim_info_dbus_get_spn(DBusConnection *conn,
 	return sim_info_dbus_reply_with_string(msg, dbus->info->spn);
 }
 
+static DBusMessage *sim_info_dbus_get_all2(DBusConnection *conn,
+	DBusMessage *msg, void *data)
+{
+	SimInfoDBus *dbus = data;
+	const struct sim_info *info = dbus->info;
+	DBusMessage *reply = dbus_message_new_method_return(msg);
+	DBusMessageIter it;
+
+	dbus_message_iter_init_append(reply, &it);
+	sim_info_dbus_append_all_args(&it, info);
+	sim_info_dbus_append_string(&it, info->label);
+	return reply;
+}
+
+static DBusMessage *sim_info_dbus_get_label(DBusConnection *conn,
+	DBusMessage *msg, void *data)
+{
+	SimInfoDBus *dbus = data;
+
+	return sim_info_dbus_reply_with_string(msg, dbus->info->label);
+}
+
+static DBusMessage *sim_info_dbus_set_label(DBusConnection *conn,
+	DBusMessage *msg, void *data)
+{
+	if (ofono_dbus_access_method_allowed(dbus_message_get_sender(msg),
+		OFONO_DBUS_ACCESS_INTF_SIMINFO,
+		OFONO_DBUS_ACCESS_SIMINFO_SET_CARD_LABEL, NULL)) {
+		SimInfoDBus *dbus = data;
+		const char *label = NULL;
+		DBusMessageIter it;
+
+		/* gdbus library has checked the signature for us */
+		dbus_message_iter_init(msg, &it);
+		dbus_message_iter_get_basic(&it, &label);
+
+		if (sim_info_set_label(dbus->info, label)) {
+			return dbus_message_new_method_return(msg);
+		}
+		return __ofono_error_sim_not_ready(msg);
+	}
+	return __ofono_error_access_denied(msg);
+}
+
 #define SIM_INFO_DBUS_VERSION_ARG   {"version", "i"}
 #define SIM_INFO_DBUS_ICCID_ARG     {"iccid", "s"}
 #define SIM_INFO_DBUS_IMSI_ARG      {"imsi", "s"}
-#define SIM_INFO_DBUS_SPN_ARG       {"spn" , "s"}
+#define SIM_INFO_DBUS_SPN_ARG       {"spn", "s"}
+#define SIM_INFO_DBUS_LABEL_ARG     {"label", "s"}
 
 #define SIM_INFO_DBUS_GET_ALL_ARGS \
 	SIM_INFO_DBUS_VERSION_ARG, \
 	SIM_INFO_DBUS_ICCID_ARG, \
 	SIM_INFO_DBUS_IMSI_ARG, \
 	SIM_INFO_DBUS_SPN_ARG
+
+#define SIM_INFO_DBUS_GET_ALL2_ARGS \
+	SIM_INFO_DBUS_GET_ALL_ARGS, \
+	SIM_INFO_DBUS_LABEL_ARG
 
 static const GDBusMethodTable sim_info_dbus_methods[] = {
 	{ GDBUS_METHOD("GetAll",
@@ -151,6 +208,16 @@ static const GDBusMethodTable sim_info_dbus_methods[] = {
 	{ GDBUS_METHOD("GetServiceProviderName",
 			NULL, GDBUS_ARGS(SIM_INFO_DBUS_SPN_ARG),
 			sim_info_dbus_get_spn) },
+	/* v2 */
+	{ GDBUS_METHOD("GetAll2",
+			NULL, GDBUS_ARGS(SIM_INFO_DBUS_GET_ALL2_ARGS),
+			sim_info_dbus_get_all2) },
+	{ GDBUS_METHOD("GetCardLabel",
+			NULL, GDBUS_ARGS(SIM_INFO_DBUS_LABEL_ARG),
+			sim_info_dbus_get_label) },
+	{ GDBUS_METHOD("SetCardLabel",
+			GDBUS_ARGS(SIM_INFO_DBUS_LABEL_ARG), NULL,
+			sim_info_dbus_set_label) },
 	{ }
 };
 
@@ -161,6 +228,9 @@ static const GDBusSignalTable sim_info_dbus_signals[] = {
 			GDBUS_ARGS(SIM_INFO_DBUS_IMSI_ARG)) },
 	{ GDBUS_SIGNAL(SIM_INFO_DBUS_SPN_CHANGED_SIGNAL,
 			GDBUS_ARGS(SIM_INFO_DBUS_SPN_ARG)) },
+	/* v2 */
+	{ GDBUS_SIGNAL(SIM_INFO_DBUS_LABEL_CHANGED_SIGNAL,
+			GDBUS_ARGS(SIM_INFO_DBUS_LABEL_ARG)) },
 	{ }
 };
 
@@ -175,9 +245,8 @@ static void sim_info_dbus_modem_cb(struct ofono_watch *watch, void *data)
 static void sim_info_dbus_emit(SimInfoDBus *dbus,
 	const char *signal, const char *value)
 {
-	const char *arg = value;
+	const char *arg = value ? value : "";
 
-	if (!arg) arg = "";
 	g_dbus_emit_signal(dbus->conn, dbus->info->path,
 		SIM_INFO_DBUS_INTERFACE, signal,
 		DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID);
@@ -199,6 +268,12 @@ static void sim_info_dbus_spn_cb(struct sim_info *info, void *data)
 {
 	sim_info_dbus_emit((SimInfoDBus *)data,
 		SIM_INFO_DBUS_SPN_CHANGED_SIGNAL, info->spn);
+}
+
+static void sim_info_dbus_label_cb(struct sim_info *info, void *data)
+{
+	sim_info_dbus_emit((SimInfoDBus *)data,
+		SIM_INFO_DBUS_LABEL_CHANGED_SIGNAL, info->label);
 }
 
 SimInfoDBus *sim_info_dbus_new(struct sim_info *info)
@@ -231,6 +306,9 @@ SimInfoDBus *sim_info_dbus_new(struct sim_info *info)
 		dbus->info_event_id[SIM_INFO_EVENT_SPN] =
 			sim_info_add_spn_changed_handler(info,
 				sim_info_dbus_spn_cb, dbus);
+		dbus->info_event_id[SIM_INFO_EVENT_LABEL] =
+			sim_info_add_label_changed_handler(info,
+				sim_info_dbus_label_cb, dbus);
 
 		return dbus;
 	} else {

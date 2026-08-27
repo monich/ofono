@@ -961,7 +961,7 @@ unit_tests += unit/test-sim-info
 unit_test_sim_info_dbus_SOURCES = unit/test-sim-info-dbus.c \
 			unit/test-dbus.c unit/fake_watch.c \
 			src/sim-info.c src/sim-info-dbus.c \
-			gdbus/object.c \
+			gdbus/object.c src/dbus-access.c \
 			src/dbus.c src/storage.c src/watchlist.c src/log.c
 unit_test_sim_info_dbus_CFLAGS = $(COVERAGE_OPT) $(AM_CFLAGS) \
 			@DBUS_GLIB_CFLAGS@ -DSTORAGEDIR='"/tmp/ofono"'
